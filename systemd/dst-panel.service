@@ -1,0 +1,21 @@
+[Unit]
+Description=DST Panel
+After=network.target
+
+[Service]
+Type=simple
+User=dstpanel
+Group=dstpanel
+WorkingDirectory=/opt/dst-panel
+EnvironmentFile=-/opt/dst-panel/.env
+Environment="PYTHONPATH=/opt/dst-panel"
+Environment="PANEL_HOST=0.0.0.0"
+Environment="PANEL_PORT=8000"
+ExecStart=/opt/dst-panel/scripts/run_panel.sh
+Restart=on-failure
+RestartSec=5
+# Не убивать дочерние DST-процессы при restart/stop панели
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

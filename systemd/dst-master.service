@@ -1,0 +1,17 @@
+[Unit]
+Description=DST Master Shard
+After=network.target
+
+[Service]
+Type=simple
+User=dstpanel
+Group=dstpanel
+WorkingDirectory=/home/dstpanel/dst/bin
+Environment="LD_LIBRARY_PATH=/home/dstpanel/dst/bin/lib32:/home/dstpanel/dst/bin/lib64"
+Environment="STEAMPIPE_PATH=/home/dstpanel/dst/steamcmd/linux32"
+ExecStart=/home/dstpanel/dst/bin/dontstarve_dedicated_server_nullrenderer -shard Master -cluster cluster -persistent_storage_root /home/dstpanel/dst
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

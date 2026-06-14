@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DST Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div id="app">
+  <div id="login-screen" class="screen">
+    <div class="login-card">
+      <div class="login-brand">
+        <i data-lucide="flame" class="brand-icon"></i>
+        <div>
+          <h1>DST Panel</h1>
+          <p class="subtitle">Панель управления сервером Don't Starve Together</p>
+        </div>
+      </div>
+      <div id="login-error" class="hidden"></div>
+      <form id="login-form" class="form">
+        <div class="field">
+          <label for="login-username">Логин</label>
+          <div class="input-wrap">
+            <i data-lucide="user"></i>
+            <input type="text" id="login-username" required autocomplete="username" placeholder="admin">
+          </div>
+        </div>
+        <div class="field">
+          <label for="login-password">Пароль</label>
+          <div class="input-wrap">
+            <i data-lucide="lock"></i>
+            <input type="password" id="login-password" required autocomplete="current-password">
+          </div>
+        </div>
+        <div id="totp-field" class="field hidden">
+          <label for="login-totp">Код 2FA</label>
+          <div class="input-wrap">
+            <i data-lucide="shield"></i>
+            <input type="text" id="login-totp" placeholder="000000" maxlength="6">
+          </div>
+        </div>
+        <button type="submit" id="login-btn" class="btn btn-primary btn-block">
+          <i data-lucide="log-in"></i> Войти
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <div id="main-screen" class="screen hidden">
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <i data-lucide="flame"></i>
+        <span>DST Panel</span>
+      </div>
+      <nav>
+        <a class="nav-item active" data-page="dashboard"><i data-lucide="layout-dashboard"></i><span>Обзор</span></a>
+        <a class="nav-item" data-page="setup"><i data-lucide="rocket"></i><span>Запуск</span></a>
+        <a class="nav-item" data-page="server"><i data-lucide="server"></i><span>Сервер</span></a>
+        <a class="nav-item" data-page="config"><i data-lucide="settings-2"></i><span>Конфиг</span></a>
+        <a class="nav-item" data-page="mods"><i data-lucide="puzzle"></i><span>Моды</span></a>
+        <a class="nav-item" data-page="players"><i data-lucide="gamepad-2"></i><span>Игроки</span></a>
+        <a class="nav-item" data-page="logs"><i data-lucide="scroll-text"></i><span>Логи</span></a>
+        <a class="nav-item" data-page="backups"><i data-lucide="archive"></i><span>Бэкапы</span></a>
+        <a class="nav-item hidden" data-page="users" id="nav-users"><i data-lucide="users"></i><span>Пользователи</span></a>
+        <a class="nav-item hidden" data-page="audit" id="nav-audit"><i data-lucide="clipboard-list"></i><span>Аудит</span></a>
+        <a class="nav-item" data-page="settings"><i data-lucide="user-cog"></i><span>Аккаунт</span></a>
+      </nav>
+      <div class="sidebar-footer">
+        <span id="user-role-badge" class="badge"></span>
+        <button id="logout-btn" class="btn btn-ghost btn-sm"><i data-lucide="log-out"></i></button>
+      </div>
+    </aside>
+    <main id="content">
+      <div id="page-dashboard" class="page"></div>
+      <div id="page-setup" class="page hidden"></div>
+      <div id="page-server" class="page hidden"></div>
+      <div id="page-config" class="page hidden"></div>
+      <div id="page-mods" class="page hidden"></div>
+      <div id="page-players" class="page hidden"></div>
+      <div id="page-logs" class="page hidden"></div>
+      <div id="page-backups" class="page hidden"></div>
+      <div id="page-users" class="page hidden"></div>
+      <div id="page-audit" class="page hidden"></div>
+      <div id="page-settings" class="page hidden"></div>
+    </main>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script src="/static/js/api.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

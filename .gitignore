@@ -1,0 +1,90 @@
+# --- Secrets & environment ---
+.env
+.env.*
+!.env.example
+
+# --- Database & panel runtime data ---
+*.db
+*.sqlite
+*.sqlite3
+data.db
+shard-pids.json
+shard-logs/
+backups/
+world-library/
+
+# --- DST tokens & credentials ---
+cluster_token.txt
+.cluster_token.backup
+**/cluster_token.txt
+**/.cluster_token.backup
+
+# --- DST cluster / saves (local dev or copied server data) ---
+steamcmd/
+DoNotStarveTogether/
+dst/
+cluster/
+Master/
+Caves/
+session/
+Save/
+backup/
+saveindex
+
+# Server-specific config (IPs, passwords, player lists)
+**/adminlist.txt
+**/blocklist.txt
+**/whitelist.txt
+**/cluster.ini
+**/server.ini
+**/modoverrides.lua
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+.eggs/
+*.egg-info/
+dist/
+build/
+*.egg
+pip-wheel-metadata/
+
+# --- Testing ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# --- Logs ---
+*.log
+logs/
+panel_launch.log
+
+# --- IDE / editor / OS ---
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Cursor ---
+.cursor/
+
+# --- Archives & local backups ---
+*.tar.gz
+*.zip
+*.7z
+*.bak
+*.backup
