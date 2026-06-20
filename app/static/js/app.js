@@ -575,6 +575,14 @@ async function renderSetup() {
               <input type="password" class="input" id="online-password-input" placeholder="Пароль для игроков" ${isOp() ? '' : 'readonly'}>
             </div>
           </div>
+          <div class="field mt-12">
+            <label>Режим игры</label>
+            <select id="online-game-mode-input" class="select-styled" ${isOp() ? '' : 'disabled'}>
+              <option value="survival">Survival</option>
+              <option value="endless">Endless</option>
+              <option value="wilderness">Wilderness</option>
+            </select>
+          </div>
           <div class="btn-group mt-12">
             <button class="btn btn-primary" onclick="applyOnlinePreset()" ${isOp() ? '' : 'disabled'}>
               <i data-lucide="zap"></i> Настроить онлайн-сервер
@@ -600,6 +608,14 @@ async function renderSetup() {
               <label>Пароль (необязательно)</label>
               <input type="password" class="input" id="friends-password-input" placeholder="Пароль для друга" ${isOp() ? '' : 'readonly'}>
             </div>
+          </div>
+          <div class="field mt-12">
+            <label>Режим игры</label>
+            <select id="friends-game-mode-input" class="select-styled" ${isOp() ? '' : 'disabled'}>
+              <option value="survival">Survival</option>
+              <option value="endless">Endless</option>
+              <option value="wilderness">Wilderness</option>
+            </select>
           </div>
           <div class="btn-group mt-12">
             <button class="btn btn-outline" onclick="applyFriendsPreset()" ${isOp() ? '' : 'disabled'}>
@@ -705,9 +721,21 @@ async function renderSetup() {
     `;
     refreshIcons();
     flushNotices();
+    loadSetupGameModes();
   } catch (err) {
     renderLoadError(el, err.message, 'renderSetup');
   }
+}
+
+async function loadSetupGameModes() {
+  try {
+    const data = await API.get('/api/config/cluster');
+    const mode = data['GAMEPLAY.game_mode'] || 'survival';
+    const onlineSel = $('online-game-mode-input');
+    const friendsSel = $('friends-game-mode-input');
+    if (onlineSel) onlineSel.value = mode;
+    if (friendsSel) friendsSel.value = mode;
+  } catch {}
 }
 
 async function initCluster() {
@@ -719,11 +747,12 @@ async function applyPreset(mode) {
   const name = $(isFriends ? 'friends-name-input' : 'online-name-input')?.value?.trim()
     || (isFriends ? 'Игра с друзьями' : 'Мой DST сервер');
   const password = $(isFriends ? 'friends-password-input' : 'online-password-input')?.value ?? '';
+  const gameMode = $(isFriends ? 'friends-game-mode-input' : 'online-game-mode-input')?.value || 'survival';
   const label = isFriends ? 'офлайн' : 'онлайн';
-  if (!confirm(`Применить ${label}-пресет? Будут перезаписаны cluster.ini, Master/server.ini и Caves/server.ini (с привязкой master_ip).`)) return;
+  if (!confirm(`Применить ${label}-пресет (режим: ${gameMode})? Будут перезаписаны cluster.ini, Master/server.ini и Caves/server.ini (с привязкой master_ip).`)) return;
   try {
     toast(`Настройка ${label}-сервера...`, 'info');
-    const data = await API.post(`/api/server/preset/${mode}`, { cluster_name: name, password });
+    const data = await API.post(`/api/server/preset/${mode}`, { cluster_name: name, password, game_mode: gameMode });
     if (data.success) {
       const a = data.applied || {};
       toast(
@@ -1008,66 +1037,86 @@ async function renderServer() {
   stopServerPolling();
   lastServerHealthKey = '';
   const el = $('page-server');
+
   el.innerHTML = `
     ${pageHeader('server', 'Управление сервером', 'Запуск, остановка и проверка шардов DST')}
+
     <div class="card card-accent" id="worlds-panel">
-      <div class="card-header"><i data-lucide="globe"></i><h3>Миры</h3></div>
-      <p class="text-muted">Выберите, какой мир запускать при старте кластера. Можно хранить несколько именованных сейвов.</p>
-      <div id="worlds-active-block"><span class="spinner"></span></div>
-      <div class="field mt-12">
-        <label>Режим запуска</label>
-        <select id="world-mode-select" class="select-styled" onchange="onWorldModeChange()" ${isOp() ? '' : 'disabled'}>
-          <option value="current">Текущий сейв на диске</option>
-          <option value="library">Мир из библиотеки</option>
-          <option value="new">Новый мир (очистить сейвы)</option>
-        </select>
-      </div>
-      <div class="field mt-12 hidden" id="world-library-select-wrap">
-        <label>Мир из библиотеки</label>
-        <select id="world-library-select" class="select-styled" ${isOp() ? '' : 'disabled'}></select>
-      </div>
-      <div id="world-readiness-block" class="mt-12"></div>
-      <div class="btn-group mt-12">
-        <button class="btn btn-primary btn-sm" onclick="applyWorldSelection()" ${isOp() ? '' : 'disabled'}>
-          <i data-lucide="check"></i> Применить выбор
-        </button>
-        <button class="btn btn-outline btn-sm" onclick="showCreateWorldModal()" ${isOp() ? '' : 'disabled'}>
-          <i data-lucide="plus"></i> Добавить мир
-        </button>
-        <button class="btn btn-outline btn-sm" onclick="importCurrentWorldPrompt()" ${isOp() ? '' : 'disabled'}>
-          <i data-lucide="import"></i> Импорт текущего сейва
-        </button>
+      <div class="card-header"><i data-lucide="globe"></i><h3>Выбор мира и запуск</h3></div>
+      <p class="text-muted">Выберите какой мир запускать. Конфиги (cluster.ini, server.ini) сохраняются в мир автоматически.</p>
+      <div class="world-selector">
+        <div class="world-selector-main">
+          <div class="field">
+            <label>Режим запуска</label>
+            <select id="world-mode-select" class="select-styled" onchange="onWorldModeChange()" ${isOp() ? '' : 'disabled'}>
+              <option value="current">Текущий сейв на диске</option>
+              <option value="library">Мир из библиотеки (конфиг + сейв)</option>
+              <option value="new">Новый мир (очистить сейвы)</option>
+            </select>
+          </div>
+          <div class="field hidden mt-8" id="world-library-select-wrap">
+            <label>Мир из библиотеки</label>
+            <select id="world-library-select" class="select-styled" ${isOp() ? '' : 'disabled'}></select>
+          </div>
+          <div class="btn-group mt-12">
+            <button class="btn btn-primary btn-sm" onclick="applyWorldSelection()" ${isOp() ? '' : 'disabled'}>
+              <i data-lucide="check"></i> Применить выбор
+            </button>
+            <button class="btn btn-outline btn-sm" onclick="showCreateWorldModal()" ${isOp() ? '' : 'disabled'}>
+              <i data-lucide="save"></i> Создать мир
+            </button>
+            <button class="btn btn-outline btn-sm" onclick="importCurrentWorldPrompt()" ${isOp() ? '' : 'disabled'}>
+              <i data-lucide="import"></i> Импорт с диска
+            </button>
+          </div>
+          <div class="field-inline mt-12">
+            <span class="text-muted">Режим игры:</span>
+            <strong id="game-mode-current">загрузка...</strong>
+            <select id="game-mode-select" class="select-styled" onchange="changeGameMode(this.value)" ${isOp() ? '' : 'disabled'}>
+              <option value="survival">Survival</option>
+              <option value="endless">Endless</option>
+              <option value="wilderness">Wilderness</option>
+            </select>
+          </div>
+        </div>
+        <div class="world-selector-info">
+          <div id="worlds-active-block"><span class="spinner"></span></div>
+          <div id="world-readiness-block" class="mt-12"></div>
+        </div>
       </div>
       <div id="worlds-list-block" class="mt-16"></div>
-    </div>
-    <div class="card card-accent">
-      <div class="card-header"><i data-lucide="layers"></i><h3>Кластер Master + Caves</h3></div>
-      <p class="text-muted">Остановка: Caves → Master. Запуск: Master, затем Caves (автоматически). Перед первым запуском настройте конфиг.</p>
-      <div class="btn-group">
-        <button class="btn btn-success btn-sm" onclick="clusterAction('start')" ${isOp() ? '' : 'disabled'}>
+      <div class="mt-16" style="text-align:center;">
+        <button class="btn btn-success launch-btn" onclick="clusterAction('start')" ${isOp() ? '' : 'disabled'}>
           <i data-lucide="play"></i> Запустить кластер
-        </button>
-        <button class="btn btn-danger btn-sm" onclick="clusterAction('stop')" ${isOp() ? '' : 'disabled'}>
-          <i data-lucide="square"></i> Остановить кластер
-        </button>
-        <button class="btn btn-warning btn-sm" onclick="clusterAction('restart')" ${isOp() ? '' : 'disabled'}>
-          <i data-lucide="rotate-cw"></i> Перезапустить кластер
-        </button>
-        <button class="btn btn-outline btn-sm" onclick="navigateTo('config')" ${isOp() ? '' : 'disabled'}>
-          <i data-lucide="settings-2"></i> Конфиг
         </button>
       </div>
     </div>
+
     <div class="card card-accent">
-      <div class="card-header"><i data-lucide="map"></i><h3>Пересборка мира</h3></div>
+      <div class="card-header"><i data-lucide="layers"></i><h3>Управление запущенным кластером</h3></div>
+      <p class="text-muted">Остановка: Caves → Master. Запуск: Master → Caves (автоматически).</p>
+      <div class="btn-group">
+        <button class="btn btn-success btn-sm" onclick="clusterAction('start')" ${isOp() ? '' : 'disabled'}>
+          <i data-lucide="play"></i> Запустить
+        </button>
+        <button class="btn btn-danger btn-sm" onclick="clusterAction('stop')" ${isOp() ? '' : 'disabled'}>
+          <i data-lucide="square"></i> Остановить
+        </button>
+        <button class="btn btn-warning btn-sm" onclick="clusterAction('restart')" ${isOp() ? '' : 'disabled'}>
+          <i data-lucide="rotate-cw"></i> Перезапустить
+        </button>
+      </div>
+    </div>
+
+    <div class="card card-accent">
+      <div class="card-header"><i data-lucide="map"></i><h3>Пересоздание мира</h3></div>
       <p class="text-muted">
-        Останавливает кластер, архивирует сейвы (<code>session</code>, <code>Save</code>, <code>backup</code>)
-        в <code>*.regen.&lt;timestamp&gt;</code> и запускает генерацию нового мира (Master + Caves).
-        Текущий мир будет потерян — сделайте бэкап заранее.
+        Остановить кластер, архивировать текущие сейвы и сгенерировать новый мир.
+        Внимание: текущий мир будет утерян.
       </p>
       <div class="btn-group">
         <button class="btn btn-warning btn-sm" id="regen-world-btn" onclick="regenerateWorld()" ${isOp() ? '' : 'disabled'}>
-          <i data-lucide="map-pin-off"></i> Пересобрать мир
+          <i data-lucide="map-pin-off"></i> Пересоздать мир
         </button>
       </div>
       <div class="progress-wrap" id="regen-progress-wrap">
@@ -1080,6 +1129,7 @@ async function renderServer() {
         </div>
       </div>
     </div>
+
     <div id="server-warnings"></div>
     <div class="grid-2">
       <div class="card shard-card">
@@ -1093,20 +1143,22 @@ async function renderServer() {
         <div id="caves-readiness"></div>
       </div>
     </div>
+
     <div class="card">
-      <div class="card-header"><i data-lucide="download"></i><h3>Установка и обновление</h3></div>
-      <p class="text-muted">Скачивание и обновление файлов DST через SteamCMD. Может занять несколько минут.</p>
+      <div class="card-header"><i data-lucide="download"></i><h3>Установка и обновление DST</h3></div>
+      <p class="text-muted">Через SteamCMD. Требуется роль owner.</p>
       <div class="btn-group">
         <button class="btn btn-primary btn-sm" onclick="installServer()" ${isOwner() ? '' : 'disabled'}>
           <i data-lucide="package-down"></i> Установить DST
         </button>
         <button class="btn btn-warning btn-sm" onclick="updateServer()" ${isOwner() ? '' : 'disabled'}>
-          <i data-lucide="refresh-cw"></i> Принудительное обновление
+          <i data-lucide="refresh-cw"></i> Обновить
         </button>
       </div>
     </div>
   `;
   refreshIcons();
+  await loadGameMode();
   await loadWorldsPanel();
   await updateServerStatus();
   await checkRegenWorldStatus();
@@ -1153,6 +1205,28 @@ async function refreshWorldReadiness() {
   } catch {
     block.innerHTML = '';
   }
+}
+
+async function loadGameMode() {
+  try {
+    const data = await API.get('/api/config/cluster');
+    const mode = data['GAMEPLAY.game_mode'] || 'survival';
+    const el = $('game-mode-current');
+    const sel = $('game-mode-select');
+    if (el) el.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
+    if (sel) sel.value = mode;
+  } catch {}
+}
+
+async function changeGameMode(mode) {
+  try {
+    const data = await API.get('/api/config/cluster');
+    data['GAMEPLAY.game_mode'] = mode;
+    const result = await API.put('/api/config/cluster', { data });
+    const synced = result.worldgen_synced ? 'worldgenoverride.lua обновлён.' : '';
+    toast(`Режим изменён на ${mode}. ${synced} Для нового ландшафта выберите «Новый мир» или «Пересоздать мир».`, 'success');
+    await loadGameMode();
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 async function loadWorldsPanel() {
@@ -1416,12 +1490,6 @@ async function clusterAction(action) {
         navigateTo('config');
         return;
       }
-      const worldReady = await API.get('/api/worlds/readiness');
-      if (!worldReady.ready) {
-        const failed = (worldReady.checks || []).filter(c => c.required && !c.ok);
-        toast('Мир не готов: ' + failed.map(c => c.hint || c.label).join('; '), 'error');
-        return;
-      }
     }
     toast(`${labels[action]}...`, 'info');
     const data = await API.post(`/api/server/${action}-cluster`);
@@ -1515,12 +1583,23 @@ async function updateServer() {
 async function renderConfig() {
   const el = $('page-config');
   let workflowHtml = '';
+  let worldBanner = '';
   try {
     const wf = await API.get('/api/config/workflow');
     workflowHtml = buildConfigWorkflowHtml(wf);
   } catch {}
+  try {
+    const act = await API.get('/api/worlds/active-info');
+    if (act.mode === 'library' && act.world_name) {
+      worldBanner = `<div class="card card-accent" style="border-left:4px solid var(--accent);margin-bottom:12px;">
+        <div class="card-header"><i data-lucide="globe"></i><h3>Редактирование конфига мира: ${escHtml(act.world_name)}</h3></div>
+        <p class="text-muted-sm">Конфиги привязаны к выбранному миру. Изменения синхронизируются в мир автоматически.</p>
+      </div>`;
+    }
+  } catch {}
   el.innerHTML = `
     ${pageHeader('settings-2', 'Конфигурация', 'Настройка кластера перед запуском')}
+    ${worldBanner}
     ${workflowHtml}
     <div class="tabs">
       <div class="tab active" data-tab="cluster" onclick="switchConfigTab('cluster')"><i data-lucide="network"></i> Кластер</div>
@@ -1608,33 +1687,43 @@ function buildConfigWorkflowHtml(wf) {
   const ready = wf.ready_to_start;
   const activeIdx = steps.findIndex(s => !s.done);
   const currentIdx = activeIdx === -1 ? steps.length - 1 : activeIdx;
+  const tabHints = {
+    cluster: 'cluster',
+    master_bind: 'master',
+    caves_bind: 'caves',
+    token: 'token',
+  };
   return `
     <div class="card workflow-card">
       <div class="card-header">
         <i data-lucide="list-checks"></i>
         <h3>Порядок настройки</h3>
         ${ready
-          ? '<span class="badge ok">Готов к запуску</span>'
+          ? '<span class="badge ok">Готов к запуску → Сервер</span>'
           : '<span class="badge warn">Не завершено</span>'}
       </div>
       <div class="setup-progress">
-        ${steps.map((s, i) => `
-          <div class="setup-step ${s.done ? 'done' : ''} ${i === currentIdx && !s.done ? 'active' : ''}">
+        ${steps.map((s, i) => {
+          const tab = tabHints[s.id] || 'cluster';
+          return `
+          <div class="setup-step ${s.done ? 'done' : ''} ${i === currentIdx && !s.done ? 'active' : ''}" onclick="openConfigTab('${tab}')" style="cursor:pointer;">
             <div class="setup-step-icon">
               <i data-lucide="${s.done ? 'check-circle' : (i === currentIdx ? 'circle-dot' : 'circle')}"></i>
             </div>
             <div class="setup-step-body">
               <strong>${escHtml(s.label)}</strong>
-              <span>${s.done ? 'Готово' : escHtml(s.hint || 'Требуется настройка')}</span>
+              <span>${s.done ? 'Готово ✓' : escHtml(s.hint || 'Требуется настройка')}</span>
+              ${!s.done ? `<span class="setup-step-action">Перейти → ${tab === 'cluster' ? 'Кластер' : tab === 'master' ? 'Master' : tab === 'caves' ? 'Caves' : 'Токен'}</span>` : ''}
             </div>
-          </div>
-        `).join('')}
+          </div>`;
+        }).join('')}
       </div>
       <div class="btn-group">
-        <button class="btn btn-outline btn-sm" onclick="applyAllBindings()" ${isOp() ? '' : 'disabled'}>
-          <i data-lucide="link"></i> Привязать всё автоматически
+        <button class="btn btn-primary btn-sm" onclick="applyAllBindings()" ${isOp() ? '' : 'disabled'}>
+          <i data-lucide="link"></i> Привязать всё (cluster.ini → Master → Caves)
         </button>
       </div>
+      ${ready ? '<p class="text-muted-sm mt-12"><i data-lucide="check" class="icon-inline"></i> Конфиг готов. Перейдите на вкладку <a href="#" onclick="navigateTo(\'server\');return false;">Сервер</a> для выбора мира и запуска.</p>' : ''}
     </div>
   `;
 }
@@ -1876,10 +1965,22 @@ async function applyPresetFromConfig(mode) {
   const name = prompt('Название сервера:', defaultName);
   if (name === null) return;
   const password = prompt('Пароль (оставьте пустым, если не нужен):', '') ?? '';
-  const label = isFriends ? 'офлайн' : 'онлайн';
-  if (!confirm(`Перезаписать все конфиги (${label}-пресет)?`)) return;
+  let gameMode = 'survival';
   try {
-    const data = await API.post(`/api/server/preset/${mode}`, { cluster_name: name.trim() || defaultName, password });
+    const cluster = await API.get('/api/config/cluster');
+    gameMode = cluster['GAMEPLAY.game_mode'] || 'survival';
+  } catch {}
+  const gameModeInput = prompt('Режим игры (survival / endless / wilderness):', gameMode);
+  if (gameModeInput === null) return;
+  gameMode = (gameModeInput.trim() || gameMode).toLowerCase();
+  if (!['survival', 'endless', 'wilderness', 'lavaarena'].includes(gameMode)) {
+    toast('Неизвестный режим. Используйте survival, endless или wilderness.', 'error');
+    return;
+  }
+  const label = isFriends ? 'офлайн' : 'онлайн';
+  if (!confirm(`Перезаписать все конфиги (${label}-пресет, режим: ${gameMode})?`)) return;
+  try {
+    const data = await API.post(`/api/server/preset/${mode}`, { cluster_name: name.trim() || defaultName, password, game_mode: gameMode });
     if (data.success) {
       const a = data.applied || {};
       toast(`Пресет ${label}: Master :${a.master_port}, Caves :${a.caves_port}`, 'success');
@@ -1900,7 +2001,7 @@ async function saveClusterConfig() {
   });
   try {
     await API.put('/api/config/cluster', { data });
-    toast('cluster.ini сохранён. Далее: вкладка Master → привязка.', 'success');
+    toast('cluster.ini сохранён. worldgenoverride.lua синхронизирован с режимом игры.', 'success');
     renderConfig();
   } catch (err) { toast(err.message, 'error'); }
 }

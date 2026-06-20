@@ -16,8 +16,11 @@ from app.config.config_reader import (
     get_cluster_dir,
     normalize_shard,
     read_cluster_ini,
+    read_shard_ini,
     refresh_dst_paths,
     validate_cluster_config,
+    write_cluster_ini,
+    write_shard_ini,
 )
 
 WORLD_LIBRARY_DIR = "/var/lib/dst-panel/world-library"
@@ -32,11 +35,123 @@ _SHARD_SAVE_ITEMS = (
     "saveindex",
     "SaveIndex",
 )
+_SHARD_CONFIG_ITEMS = (
+    "server.ini",
+    "worldgenoverride.lua",
+)
+_CLUSTER_CONFIG_FILES = (
+    "cluster.ini",
+    "cluster_token.txt",
+    "modoverrides.lua",
+    "adminlist.txt",
+    "blocklist.txt",
+    "whitelist.txt",
+)
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
+
+def _get_cluster_dir() -> str:
+    refresh_dst_paths()
+    return get_cluster_dir()
+
+
+def _shard_dir(shard: str) -> str:
+    return os.path.join(_get_cluster_dir(), normalize_shard(shard))
+
+
+def _world_shard_dir(world_path: str, shard: str) -> str:
+    return os.path.join(world_path, normalize_shard(shard))
+
+
+def _capture_cluster_configs_to_dir(dest_dir: str) -> list:
+    src_dir = _get_cluster_dir()
+    os.makedirs(dest_dir, exist_ok=True)
+    copied = []
+    for fname in _CLUSTER_CONFIG_FILES:
+        src = os.path.join(src_dir, fname)
+        dst = os.path.join(dest_dir, fname)
+        if os.path.isfile(src):
+            shutil.copy2(src, dst)
+            copied.append(fname)
+    return copied
+
+
+def _apply_cluster_configs_from_dir(src_dir: str) -> list:
+    dest_dir = _get_cluster_dir()
+    os.makedirs(dest_dir, exist_ok=True)
+    applied = []
+    for fname in _CLUSTER_CONFIG_FILES:
+        src = os.path.join(src_dir, fname)
+        dst = os.path.join(dest_dir, fname)
+        if os.path.isfile(src):
+            shutil.copy2(src, dst)
+            applied.append(fname)
+    return applied
+
+
+def _apply_configs_from_world(world_path: str) -> dict:
+    refresh_dst_paths()
+    cluster_configs = _apply_cluster_configs_from_dir(world_path)
+    result = {"cluster_configs": cluster_configs, "master": {}, "caves": {}}
+    for shard in ("Master", "Caves"):
+        src_shard_dir = _world_shard_dir(world_path, shard)
+        if not os.path.isdir(src_shard_dir):
+            continue
+        dest_shard_dir = _shard_dir(shard)
+        os.makedirs(dest_shard_dir, exist_ok=True)
+        applied = []
+        for fname in _SHARD_CONFIG_ITEMS:
+            src = os.path.join(src_shard_dir, fname)
+            dst = os.path.join(dest_shard_dir, fname)
+            if os.path.isfile(src):
+                shutil.copy2(src, dst)
+                applied.append(fname)
+        result[shard.lower()] = {"applied": applied}
+    return result
+
+
+def _capture_configs_to_world(world_path: str) -> dict:
+    refresh_dst_paths()
+    cluster_configs = _capture_cluster_configs_to_dir(world_path)
+    result = {"cluster_configs": cluster_configs, "master": {}, "caves": {}}
+    for shard in ("Master", "Caves"):
+        src_shard_dir = _shard_dir(shard)
+        dest_shard_dir = _world_shard_dir(world_path, shard)
+        os.makedirs(dest_shard_dir, exist_ok=True)
+        captured = []
+        for fname in _SHARD_CONFIG_ITEMS:
+            src = os.path.join(src_shard_dir, fname)
+            dst = os.path.join(dest_shard_dir, fname)
+            if os.path.isfile(src):
+                shutil.copy2(src, dst)
+                captured.append(fname)
+        result[shard.lower()] = {"captured": captured}
+    return result
+
+
+def get_active_world_info() -> dict:
+    active = get_active_selection()
+    mode = active.get("mode", "current")
+    world_id = active.get("world_id") if mode == "library" else None
+    if world_id:
+        world = get_world(world_id)
+        return {
+            "mode": mode,
+            "world_id": world_id,
+            "world_name": (world or {}).get("name", ""),
+            "world_path": _world_dir(world_id) if world_id else None,
+        }
+    return {"mode": mode, "world_id": None, "world_name": "", "world_path": None}
+
+
+def sync_active_world_configs() -> dict:
+    info = get_active_world_info()
+    if info["mode"] == "library" and info["world_path"]:
+        return _capture_configs_to_world(info["world_path"])
+    return {"synced": False, "reason": "no_active_library_world"}
 
 def _iso(dt: Optional[datetime] = None) -> str:
     return (dt or _utcnow()).isoformat()
@@ -48,12 +163,6 @@ def _ensure_dirs() -> None:
         os.chmod(WORLD_LIBRARY_DIR, 0o700)
     except OSError:
         pass
-
-
-def _shard_dir(shard: str) -> str:
-    shard = normalize_shard(shard)
-    cluster = get_cluster_dir()
-    return os.path.join(cluster, shard)
 
 
 def _rmtree_safe(path: str) -> None:
@@ -237,6 +346,12 @@ def _capture_shard_to_dir(shard: str, dest_shard_dir: str) -> dict:
         else:
             shutil.copy2(src, dst)
         copied.append(item)
+    for item in _SHARD_CONFIG_ITEMS:
+        src = os.path.join(src_dir, item)
+        if os.path.isfile(src):
+            dst = os.path.join(dest_shard_dir, item)
+            shutil.copy2(src, dst)
+            copied.append(item)
     scan = _scan_shard_save(shard)
     return {
         "shard": shard,
@@ -285,6 +400,12 @@ def _apply_dir_to_shard(shard: str, src_shard_dir: str) -> dict:
         else:
             shutil.copy2(src, dst)
         applied.append(item)
+    for item in _SHARD_CONFIG_ITEMS:
+        src = os.path.join(src_shard_dir, item)
+        if os.path.isfile(src):
+            dst = os.path.join(dest_dir, item)
+            shutil.copy2(src, dst)
+            applied.append(item)
     return {"shard": shard, "applied": bool(applied), "items": applied}
 
 
@@ -398,8 +519,12 @@ def get_world_readiness(world_id: Optional[str] = None) -> dict:
                 "id": "master_save",
                 "label": "Сейв Master",
                 "ok": bool(master_ok),
-                "required": True,
-                "hint": "В мире нет данных Master — импортируйте или сохраните текущий сейв",
+                "required": False,
+                "hint": (
+                    "Сейв будет создан при первом запуске"
+                    if not master_ok
+                    else "Сейв Master найден"
+                ),
             })
             if shards_enabled:
                 checks.append({
@@ -467,8 +592,10 @@ def create_world(
     master_info = {"has_data": False, "size_bytes": 0, "session_ids": []}
     caves_info = {"has_data": False, "size_bytes": 0, "session_ids": []}
 
+    refresh_dst_paths()
+    _capture_configs_to_world(world_path)
+
     if from_current:
-        refresh_dst_paths()
         master_cap = _capture_shard_to_dir("Master", os.path.join(world_path, "Master"))
         caves_cap = _capture_shard_to_dir("Caves", os.path.join(world_path, "Caves"))
         master_info = {
@@ -544,6 +671,7 @@ def capture_world_from_current(world_id: str) -> dict:
         return {"success": False, "error": "На диске нет сейва для сохранения"}
 
     world_path = _world_dir(world_id)
+    _capture_configs_to_world(world_path)
     master_cap = _capture_shard_to_dir("Master", os.path.join(world_path, "Master"))
     caves_cap = _capture_shard_to_dir("Caves", os.path.join(world_path, "Caves"))
     world["master"] = {
@@ -590,17 +718,42 @@ def apply_world_to_cluster(world_id: str) -> dict:
     world = get_world(world_id)
     if not world:
         return {"success": False, "error": "Мир не найден"}
-    if not world.get("master", {}).get("has_data"):
-        return {"success": False, "error": "В мире нет данных Master"}
 
     refresh_dst_paths()
     world_path = _world_dir(world_id)
-    master_res = _apply_dir_to_shard("Master", os.path.join(world_path, "Master"))
-    caves_res = _apply_dir_to_shard("Caves", os.path.join(world_path, "Caves"))
+    has_save_data = bool(
+        world.get("master", {}).get("has_data") or world.get("caves", {}).get("has_data")
+    )
+
+    if has_save_data:
+        cluster_configs = _apply_cluster_configs_from_dir(world_path)
+        master_res = _apply_dir_to_shard("Master", os.path.join(world_path, "Master"))
+        caves_res = _apply_dir_to_shard("Caves", os.path.join(world_path, "Caves"))
+    else:
+        # Пустой слот: сейвов нет — используем текущий cluster.ini и worldgen с диска
+        cluster_configs = []
+        cleared = {}
+        for shard in ("Master", "Caves"):
+            cleared[shard] = _clear_shard_save(shard)
+        master_res = {
+            "shard": "Master",
+            "applied": False,
+            "reason": "empty_slot_uses_live_config",
+            "cleared": cleared.get("Master", []),
+        }
+        caves_res = {
+            "shard": "Caves",
+            "applied": False,
+            "reason": "empty_slot_uses_live_config",
+            "cleared": cleared.get("Caves", []),
+        }
+
     return {
         "success": True,
         "world_id": world_id,
         "world_name": world.get("name"),
+        "has_save_data": has_save_data,
+        "cluster_configs": cluster_configs,
         "master": master_res,
         "caves": caves_res,
         "message": f"Мир «{world.get('name')}» подготовлен к запуску",
@@ -636,6 +789,8 @@ def prepare_active_world_for_cluster_start() -> dict:
 
     if mode == "new":
         result = clear_cluster_for_new_world()
+        from app.config.config_reader import sync_worldgen_with_game_mode
+        sync_worldgen_with_game_mode()
         result["mode"] = mode
         return result
 

@@ -21,6 +21,7 @@ from app.services.mod_service import (
 )
 from app.services.list_service import read_all_lists, apply_list_action, add_to_list
 from app.services.player_service import get_players_overview
+from app.services.world_library import sync_active_world_configs
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -89,6 +90,7 @@ def update_cluster(req: ClusterConfigUpdate, request: Request):
     if not check_role(user, "operator"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     result = write_cluster_ini(req.data)
+    sync_active_world_configs()
     log_audit_standalone(user.id, "update_cluster_ini", ip=_client_ip(request))
     return result
 
@@ -105,6 +107,7 @@ def update_shard(name: str, req: ShardConfigUpdate, request: Request):
     if not check_role(user, "operator"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     result = write_shard_ini(name, req.data)
+    sync_active_world_configs()
     log_audit_standalone(user.id, f"update_shard_{name}", ip=_client_ip(request))
     return result
 
@@ -127,6 +130,7 @@ def apply_bindings(request: Request):
     if not check_role(user, "operator"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     result = apply_cluster_bindings()
+    sync_active_world_configs()
     if result.get("success"):
         log_audit_standalone(user.id, "apply_cluster_bindings", ip=_client_ip(request))
     return result
@@ -144,15 +148,10 @@ def caves_bind_master(request: Request):
     if not check_role(user, "operator"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     result = bind_caves_to_master()
+    sync_active_world_configs()
     if result.get("success"):
         log_audit_standalone(user.id, "bind_caves_master", ip=_client_ip(request))
     return result
-
-
-@router.get("/master/binding")
-def master_binding(request: Request):
-    _get_user(request)
-    return get_master_binding_status()
 
 
 @router.post("/master/bind-cluster")
@@ -161,9 +160,16 @@ def master_bind_cluster(request: Request):
     if not check_role(user, "operator"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     result = bind_master_to_cluster()
+    sync_active_world_configs()
     if result.get("success"):
         log_audit_standalone(user.id, "bind_master_cluster", ip=_client_ip(request))
     return result
+
+
+@router.get("/master/binding")
+def master_binding(request: Request):
+    _get_user(request)
+    return get_master_binding_status()
 
 
 @router.get("/mods")
@@ -282,6 +288,7 @@ def update_token(req: TokenUpdate, request: Request):
     if err:
         raise HTTPException(status_code=400, detail=err)
     result = write_cluster_token(req.token)
+    sync_active_world_configs()
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to save token"))
     log_audit_standalone(user.id, "update_token", ip=_client_ip(request))
@@ -305,5 +312,6 @@ def update_file(filename: str, req: TextFileUpdate, request: Request):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     filepath = f"{CLUSTER_DIR}/{filename}"
     result = write_text_file(filepath, req.content)
+    sync_active_world_configs()
     log_audit_standalone(user.id, f"update_file_{filename}", ip=_client_ip(request))
     return result

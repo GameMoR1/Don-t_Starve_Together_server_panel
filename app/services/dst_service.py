@@ -935,21 +935,12 @@ async def stop_cluster_shards() -> dict:
 
 
 async def start_cluster_shards() -> dict:
-    bindings = apply_cluster_bindings()
-    if not bindings.get("success"):
-        return {
-            "success": False,
-            "error": bindings.get("error", "Ошибка привязки конфигов"),
-            "bindings": bindings,
-        }
-
     config_check = validate_cluster_config()
     if not config_check["ok"]:
         return {
             "success": False,
             "error": "Конфиг не готов к запуску: " + "; ".join(config_check["errors"]),
             "hints": config_check["hints"],
-            "bindings": bindings,
         }
 
     await _ensure_cluster_stopped()
@@ -962,7 +953,15 @@ async def start_cluster_shards() -> dict:
             "success": False,
             "error": world_prep.get("error", "Не удалось подготовить выбранный мир"),
             "world_prep": world_prep,
+        }
+
+    bindings = apply_cluster_bindings()
+    if not bindings.get("success"):
+        return {
+            "success": False,
+            "error": bindings.get("error", "Ошибка привязки конфигов"),
             "bindings": bindings,
+            "world_prep": world_prep,
         }
 
     master = await start_shard("Master", _auto_caves=False, _apply_world=False)
@@ -1260,7 +1259,15 @@ async def _regenerate_world_worker() -> None:
     global _regen_task
     cleared: dict = {}
     try:
+        from app.services.world_library import get_active_world_info, apply_world_to_cluster
+
         refresh_dst_paths()
+        active = get_active_world_info()
+        if active["mode"] == "library" and active.get("world_id"):
+            world_apply = apply_world_to_cluster(active["world_id"])
+            if not world_apply.get("success"):
+                raise RuntimeError(world_apply.get("error", "Не удалось подготовить мир из библиотеки"))
+
         config_check = validate_cluster_config()
         if not config_check["ok"]:
             raise RuntimeError(

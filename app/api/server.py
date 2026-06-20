@@ -37,16 +37,19 @@ def _client_ip(request: Request) -> str:
 class InitClusterRequest(BaseModel):
     cluster_name: str = "Мой DST сервер"
     password: str = ""
+    game_mode: str = "survival"
 
 
 class FriendsPresetRequest(BaseModel):
     cluster_name: str = "Игра с друзьями"
     password: str = ""
+    game_mode: str = "survival"
 
 
 class OnlinePresetRequest(BaseModel):
     cluster_name: str = "Мой DST сервер"
     password: str = ""
+    game_mode: str = "survival"
 
 
 @router.get("/setup")
@@ -75,7 +78,7 @@ def setup_init_cluster(req: InitClusterRequest, request: Request):
     user = _get_user(request)
     if not check_role(user, "operator"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
-    result = init_cluster(req.cluster_name, req.password)
+    result = init_cluster(req.cluster_name, req.password, req.game_mode)
     if result.get("success"):
         log_audit_standalone(user.id, "init_cluster", ip=_client_ip(request))
     return result
@@ -86,7 +89,7 @@ def setup_friends_preset(req: FriendsPresetRequest, request: Request):
     user = _get_user(request)
     if not check_role(user, "operator"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
-    result = init_friends_cluster(req.cluster_name, req.password)
+    result = init_friends_cluster(req.cluster_name, req.password, req.game_mode)
     if result.get("success"):
         log_audit_standalone(user.id, "friends_preset", ip=_client_ip(request))
     return result
@@ -97,7 +100,7 @@ def setup_online_preset(req: OnlinePresetRequest, request: Request):
     user = _get_user(request)
     if not check_role(user, "operator"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
-    result = init_online_cluster(req.cluster_name, req.password)
+    result = init_online_cluster(req.cluster_name, req.password, req.game_mode)
     if result.get("success"):
         log_audit_standalone(user.id, "online_preset", ip=_client_ip(request))
     return result

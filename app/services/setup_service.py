@@ -290,13 +290,13 @@ def repair_shard_link() -> dict:
     }
 
 
-def init_cluster(cluster_name: str = None, password: str = None) -> dict:
-    return apply_online_preset(cluster_name, password)
+def init_cluster(cluster_name: str = None, password: str = None, game_mode: str = None) -> dict:
+    return apply_online_preset(cluster_name, password, game_mode)
 
 
-def init_friends_cluster(cluster_name: str = None, password: str = None) -> dict:
-    return apply_friends_preset(cluster_name, password)
+def init_friends_cluster(cluster_name: str = None, password: str = None, game_mode: str = None) -> dict:
+    return apply_friends_preset(cluster_name, password, game_mode)
 
 
-def init_online_cluster(cluster_name: str = None, password: str = None) -> dict:
-    return apply_online_preset(cluster_name, password)
+def init_online_cluster(cluster_name: str = None, password: str = None, game_mode: str = None) -> dict:
+    return apply_online_preset(cluster_name, password, game_mode)

@@ -18,6 +18,8 @@ from app.services.world_library import (
     set_active_selection,
     get_active_selection,
     scan_current_saves,
+    sync_active_world_configs,
+    get_active_world_info,
 )
 
 router = APIRouter(prefix="/api/worlds", tags=["worlds"])
@@ -163,3 +165,20 @@ def world_delete(world_id: str, request: Request):
     if result.get("success"):
         log_audit_standalone(user.id, f"delete_world_{world_id}", ip=_client_ip(request))
     return result
+
+
+@router.post("/sync-configs")
+def world_sync_configs(request: Request):
+    user = _get_user(request)
+    if not check_role(user, "operator"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    result = sync_active_world_configs()
+    if result.get("synced"):
+        log_audit_standalone(user.id, "sync_configs_to_world", ip=_client_ip(request))
+    return result
+
+
+@router.get("/active-info")
+def world_active_info(request: Request):
+    _get_user(request)
+    return get_active_world_info()

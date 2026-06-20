@@ -100,17 +100,28 @@ def _ensure_cluster_shard_keys(cluster: dict) -> bool:
     return changed
 
 
+def cluster_ini_exists() -> bool:
+    return os.path.isfile(f"{CLUSTER_DIR}/cluster.ini")
+
+
 def read_cluster_ini() -> dict:
     path = f"{CLUSTER_DIR}/cluster.ini"
     if not os.path.exists(path):
         return _default_cluster_ini()
     config = configparser.ConfigParser()
-    config.read(path)
+    config.read(path, encoding="utf-8")
     result = {}
     for section in config.sections():
         for key, value in config.items(section):
             result[f"{section}.{key}"] = value
     return _normalize_cluster_dict(result)
+
+
+def read_cluster_game_mode(default: str = "survival") -> str:
+    """game_mode только из cluster.ini на диске (без подстановки дефолтов всего файла)."""
+    if not cluster_ini_exists():
+        return default
+    return read_cluster_ini().get("GAMEPLAY.game_mode", default) or default
 
 
 def _default_cluster_ini() -> dict:
@@ -136,7 +147,9 @@ def _default_cluster_ini() -> dict:
 
 def write_cluster_ini(data: dict) -> dict:
     path = f"{CLUSTER_DIR}/cluster.ini"
+    old_game_mode = read_cluster_game_mode("") if cluster_ini_exists() else ""
     data = _normalize_cluster_dict(data)
+    new_game_mode = data.get("GAMEPLAY.game_mode", "")
     config = configparser.ConfigParser()
     config.optionxform = str
     sections = {}
@@ -149,13 +162,20 @@ def write_cluster_ini(data: dict) -> dict:
     for section, options in sections.items():
         config[section] = options
     try:
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             config.write(f, space_around_delimiters=False)
+        worldgen_sync = {}
+        if new_game_mode:
+            worldgen_sync = sync_worldgen_with_game_mode(new_game_mode)
         if "SHARD.master_port" in data:
             _sync_caves_master_port(data["SHARD.master_port"])
         elif any(k.startswith("SHARD.") for k in data):
             _sync_caves_shard_link()
-        return {"success": True}
+        return {
+            "success": True,
+            "worldgen_synced": bool(worldgen_sync.get("changed")),
+            "game_mode_changed": bool(new_game_mode and new_game_mode != old_game_mode),
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -184,6 +204,73 @@ def _sync_caves_master_port(master_shard_port: str) -> None:
     _sync_caves_shard_link(cluster)
 
 
+GAME_MODE_TO_PRESET = {
+    "survival": "SURVIVAL_TOGETHER",
+    "endless": "ENDLESS_TOGETHER",
+    "wilderness": "WILDERNESS_TOGETHER",
+    "lavaarena": "SURVIVAL_TOGETHER",
+}
+
+
+VALID_GAME_MODES = frozenset(GAME_MODE_TO_PRESET.keys())
+
+
+def normalize_game_mode(game_mode: str = None, default: str = "survival") -> str:
+    mode = (game_mode or default).lower()
+    return mode if mode in VALID_GAME_MODES else default
+
+
+def _game_mode_preset(game_mode: str = None) -> str:
+    if not game_mode:
+        game_mode = read_cluster_game_mode("survival")
+    return GAME_MODE_TO_PRESET.get(str(game_mode).lower(), "SURVIVAL_TOGETHER")
+
+
+def _parse_worldgen_preset(content: str) -> Optional[str]:
+    if not content:
+        return None
+    match = re.search(r'preset_type\s*=\s*"([^"]+)"', content)
+    return match.group(1) if match else None
+
+
+def _worldgen_needs_update(path: str, expected_preset: str) -> bool:
+    if not os.path.isfile(path):
+        return True
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            current = handle.read()
+    except OSError:
+        return True
+    current_preset = _parse_worldgen_preset(current)
+    return current_preset != expected_preset
+
+
+def _make_worldgen(preset: str, is_caves: bool = False) -> str:
+    overrides = ""
+    if is_caves:
+        overrides = '\toverrides = {\n\t\tleveltype = "CAVE",\n\t},'
+    return f"""return {{
+\toverride_enabled = true,
+\tpreset_type = "{preset}",
+{overrides}
+}}
+"""
+
+
+def sync_worldgen_with_game_mode(game_mode: str = None) -> dict:
+    preset = _game_mode_preset(game_mode)
+    changed = []
+    for shard, is_caves in (("Master", False), ("Caves", True)):
+        path = f"{CLUSTER_DIR}/{shard}/worldgenoverride.lua"
+        new_content = _make_worldgen(preset, is_caves)
+        if _worldgen_needs_update(path, preset):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+            changed.append(f"{shard}/worldgenoverride.lua (preset → {preset})")
+    return {"changed": bool(changed), "items": changed, "preset": preset, "game_mode": game_mode or read_cluster_game_mode()}
+
+
 MASTER_WORLDGEN = """return {
 \toverride_enabled = true,
 \tpreset_type = "SURVIVAL_TOGETHER",
@@ -202,17 +289,9 @@ CAVES_WORLDGEN = """return {
 
 
 def ensure_worldgen_files() -> dict:
-    """Без worldgenoverride.lua Caves-шард не поднимается корректно."""
-    created = []
-    for shard, content in (("Master", MASTER_WORLDGEN), ("Caves", CAVES_WORLDGEN)):
-        path = f"{CLUSTER_DIR}/{shard}/worldgenoverride.lua"
-        if os.path.isfile(path) and os.path.getsize(path) > 0:
-            continue
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(content)
-        created.append(f"{shard}/worldgenoverride.lua")
-    return {"changed": bool(created), "items": created}
+    """Без worldgenoverride.lua Caves-шард не поднимается корректно.
+    Синхронизирует preset_type с game_mode из cluster.ini."""
+    return sync_worldgen_with_game_mode()
 
 
 def ensure_shard_link_config() -> dict:
@@ -290,7 +369,7 @@ def ensure_shard_link_config() -> dict:
         write_shard_ini("Caves", caves)
         changed.extend(f"caves.{k}" for k in caves_updates)
 
-    wg = ensure_worldgen_files()
+    wg = sync_worldgen_with_game_mode()
     if wg.get("changed"):
         changed.extend(wg.get("items", []))
 
@@ -303,7 +382,7 @@ def read_shard_ini(shard: str = "Master") -> dict:
     if not os.path.exists(path):
         return _default_shard_ini(shard)
     config = configparser.ConfigParser()
-    config.read(path)
+    config.read(path, encoding="utf-8")
     result = {}
     for section in config.sections():
         for key, value in config.items(section):
@@ -311,11 +390,11 @@ def read_shard_ini(shard: str = "Master") -> dict:
     return result
 
 
-def _online_cluster_ini(cluster_name: str = "Мой DST сервер", password: str = "") -> dict:
+def _online_cluster_ini(cluster_name: str = "Мой DST сервер", password: str = "", game_mode: str = None) -> dict:
     return {
         "GAMEPLAY.max_players": "6",
         "GAMEPLAY.pvp": "false",
-        "GAMEPLAY.game_mode": "survival",
+        "GAMEPLAY.game_mode": normalize_game_mode(game_mode),
         "NETWORK.cluster_name": cluster_name,
         "NETWORK.cluster_description": "",
         "NETWORK.cluster_password": password,
@@ -332,11 +411,11 @@ def _online_cluster_ini(cluster_name: str = "Мой DST сервер", password:
     }
 
 
-def _friends_cluster_ini(cluster_name: str = "Игра с друзьями", password: str = "") -> dict:
+def _friends_cluster_ini(cluster_name: str = "Игра с друзьями", password: str = "", game_mode: str = None) -> dict:
     return {
         "GAMEPLAY.max_players": "4",
         "GAMEPLAY.pvp": "false",
-        "GAMEPLAY.game_mode": "survival",
+        "GAMEPLAY.game_mode": normalize_game_mode(game_mode),
         "NETWORK.cluster_name": cluster_name,
         "NETWORK.cluster_description": "Приватный сервер для друзей",
         "NETWORK.cluster_password": password,
@@ -388,13 +467,14 @@ def build_preset_config(
     mode: str = "online",
     cluster_name: str = None,
     password: str = "",
+    game_mode: str = None,
 ) -> dict:
     if mode == "friends":
         name = (cluster_name or "Игра с друзьями").strip() or "Игра с друзьями"
-        cluster = _friends_cluster_ini(name, password)
+        cluster = _friends_cluster_ini(name, password, game_mode)
     else:
         name = (cluster_name or "Мой DST сервер").strip() or "Мой DST сервер"
-        cluster = _online_cluster_ini(name, password)
+        cluster = _online_cluster_ini(name, password, game_mode)
     master_shard_port = cluster["SHARD.master_port"]
     master_ip = cluster.get("SHARD.master_ip", "127.0.0.1")
     cluster_key = cluster.get("SHARD.cluster_key", "default")
@@ -452,7 +532,7 @@ def write_shard_ini(shard: str, data: dict) -> dict:
         config[section] = options
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             config.write(f, space_around_delimiters=False)
         return {"success": True}
     except Exception as e:
@@ -553,10 +633,10 @@ def write_cluster_token(token: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def ensure_default_configs(cluster_name: str = None, password: str = None) -> dict:
+def ensure_default_configs(cluster_name: str = None, password: str = None, game_mode: str = None) -> dict:
     cluster_path = f"{CLUSTER_DIR}/cluster.ini"
     if not os.path.exists(cluster_path):
-        return apply_online_preset(cluster_name, password)
+        return apply_online_preset(cluster_name, password, game_mode)
 
     created = []
     try:
@@ -574,8 +654,17 @@ def ensure_default_configs(cluster_name: str = None, password: str = None) -> di
 
         caves_path = f"{CLUSTER_DIR}/Caves/server.ini"
         if not os.path.exists(caves_path):
-            write_shard_ini("Caves", _shard_ini_caves(master_shard_port, master_ip))
+            cluster_key = cluster.get("SHARD.cluster_key", "default")
+            write_shard_ini("Caves", _shard_ini_caves(master_shard_port, master_ip, cluster_key))
             created.append("Caves/server.ini")
+
+        worldgen = sync_worldgen_with_game_mode()
+        if worldgen.get("changed"):
+            created.extend(worldgen.get("items", []))
+
+        link = ensure_shard_link_config()
+        if link.get("changed"):
+            created.extend(link.get("items", []))
 
         mod_path = f"{CLUSTER_DIR}/modoverrides.lua"
         if not os.path.exists(f"{CLUSTER_DIR}/Master/modoverrides.lua"):
@@ -600,8 +689,11 @@ def ensure_default_configs(cluster_name: str = None, password: str = None) -> di
         return {"success": False, "error": str(e)}
 
 
-def _apply_preset(mode: str, cluster_name: str = None, password: str = None) -> dict:
-    preset = build_preset_config(mode, cluster_name, password if password is not None else "")
+def _apply_preset(mode: str, cluster_name: str = None, password: str = None, game_mode: str = None) -> dict:
+    if not game_mode and cluster_ini_exists():
+        existing = normalize_game_mode(read_cluster_game_mode(""), default="")
+        game_mode = existing if existing else None
+    preset = build_preset_config(mode, cluster_name, password if password is not None else "", game_mode)
     name = preset["cluster"]["NETWORK.cluster_name"]
     try:
         os.makedirs(f"{CLUSTER_DIR}/Master", exist_ok=True)
@@ -610,7 +702,7 @@ def _apply_preset(mode: str, cluster_name: str = None, password: str = None) -> 
         write_cluster_ini(preset["cluster"])
         write_shard_ini("Master", preset["master"])
         write_shard_ini("Caves", preset["caves"])
-        ensure_worldgen_files()
+        sync_worldgen_with_game_mode(preset["cluster"].get("GAMEPLAY.game_mode"))
 
         created = ["cluster.ini", "Master/server.ini", "Caves/server.ini"]
 
@@ -651,14 +743,14 @@ def _apply_preset(mode: str, cluster_name: str = None, password: str = None) -> 
         return {"success": False, "error": str(e)}
 
 
-def apply_friends_preset(cluster_name: str = None, password: str = None) -> dict:
+def apply_friends_preset(cluster_name: str = None, password: str = None, game_mode: str = None) -> dict:
     """Офлайн-пресет: без токена Klei, подключение по IP."""
-    return _apply_preset("friends", cluster_name, password)
+    return _apply_preset("friends", cluster_name, password, game_mode)
 
 
-def apply_online_preset(cluster_name: str = None, password: str = None) -> dict:
+def apply_online_preset(cluster_name: str = None, password: str = None, game_mode: str = None) -> dict:
     """Онлайн-пресет: сервер в браузере Klei, нужен cluster token."""
-    return _apply_preset("online", cluster_name, password)
+    return _apply_preset("online", cluster_name, password, game_mode)
 
 
 def get_cluster_binding_status() -> dict:
@@ -818,7 +910,7 @@ def validate_cluster_config() -> dict:
 def apply_cluster_bindings() -> dict:
     """Полная привязка конфигов: cluster.ini → Master → Caves."""
     repair = ensure_shard_link_config()
-    ensure_worldgen_files()
+    sync_worldgen_with_game_mode()
     master = bind_master_to_cluster()
     if not master.get("success"):
         return {

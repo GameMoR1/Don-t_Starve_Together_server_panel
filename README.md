@@ -20,14 +20,14 @@
 
 - **ОС:** Ubuntu / Debian (amd64), root-доступ для установки
 - **Ресурсы:** от 2 ГБ RAM (рекомендуется 4+ ГБ для кластера с пещерами)
-- **Сеть:** открытые порты DST (по умолчанию Master `10999/udp`, Caves `11000/udp`; порт шардов `10888`) и порт панели (`8000/tcp`)
+- **Сеть:** открытые порты DST (по умолчанию Master `10888`, Caves `10889`) и порт панели (`8000`)
 - **Зависимости:** устанавливаются скриптом (`python3`, `steamcmd`, i386-библиотеки для DST)
 
 ## Быстрый старт
 
 ```bash
 # Клонировать репозиторий на сервер
-git clone https://github.com/GameMoR1/Don-t_Starve_Together_server_panel.git /opt/dst-panel
+git clone <url-репозитория> /opt/dst-panel
 cd /opt/dst-panel
 
 # Установка (SteamCMD, DST, systemd, venv)
@@ -50,10 +50,8 @@ sudo bash scripts/install.sh
 ### Firewall
 
 ```bash
-sudo ufw allow 8000/tcp     # панель
-sudo ufw allow 10999/udp    # Master (игровой порт)
-sudo ufw allow 11000/udp    # Caves (игровой порт)
-# Порты смотрите в Конфиг → Подключение или в cluster.ini / server.ini
+sudo ufw allow 8000/tcp    # панель
+sudo ufw allow 10999/udp   # DST (уточните порты в cluster.ini)
 ```
 
 ## Обновление
@@ -134,6 +132,4 @@ pytest
 
 ## Лицензия
 
-Проект распространяется под лицензией [GNU GPL v3](LICENSE).
-
-Don't Starve Together — торговая марка Klei Entertainment. Этот проект не связан с Klei и не поддерживается ими.
+Проект для личного / некоммерческого использования. Don't Starve Together — торговая марка Klei Entertainment.
