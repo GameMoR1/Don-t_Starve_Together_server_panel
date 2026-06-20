@@ -6,8 +6,7 @@ from fastapi import APIRouter, Request, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlmodel import Session as DBSession
 
-from app.models.models import get_engine
-from app.security.auth import get_user_by_session, check_role, log_audit_standalone
+from app.security.auth import require_user, check_role, log_audit_standalone
 from app.backup.backup_manager import (
     create_backup,
     list_backups,
@@ -25,23 +24,13 @@ router = APIRouter(prefix="/api/backup", tags=["backups"])
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
 
 
-def _get_user(request: Request):
-    session_id = request.cookies.get("session_id")
-    engine = get_engine()
-    with DBSession(engine) as db:
-        user = get_user_by_session(db, session_id)
-        if not user:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-        return user
-
-
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else None
 
 
 @router.post("/create")
 async def create(request: Request):
-    user = _get_user(request)
+    user = require_user(request)
     if not check_role(user, "admin"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -66,13 +55,13 @@ async def create(request: Request):
 
 @router.get("/list")
 def list_backups_api(request: Request):
-    _get_user(request)
+    require_user(request)
     return {"backups": list_backups()}
 
 
 @router.get("/download/{filename}")
 def download(filename: str, request: Request):
-    _get_user(request)
+    require_user(request)
     path = _backup_path(filename)
     if not path or not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Backup not found")
@@ -86,7 +75,7 @@ def download(filename: str, request: Request):
 
 @router.post("/upload")
 async def upload(request: Request, file: UploadFile = File(...)):
-    user = _get_user(request)
+    user = require_user(request)
     if not check_role(user, "owner"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -112,6 +101,11 @@ async def upload(request: Request, file: UploadFile = File(...)):
                     )
                 tmp.write(chunk)
 
+        with open(tmp_path, "rb") as f:
+            header = f.read(2)
+            if header != b"\x1f\x8b":
+                raise HTTPException(status_code=400, detail="Файл не является gzip-архивом")
+
         result = import_uploaded_backup(tmp_path, file.filename)
         tmp_path = None
         if not result.get("success"):
@@ -129,7 +123,7 @@ async def upload(request: Request, file: UploadFile = File(...)):
 
 @router.get("/details/{filename}")
 def details(filename: str, request: Request):
-    _get_user(request)
+    require_user(request)
     result = get_backup_details(filename)
     if not result.get("success"):
         raise HTTPException(status_code=404, detail=result.get("error", "Not found"))
@@ -138,7 +132,7 @@ def details(filename: str, request: Request):
 
 @router.post("/restore/{filename}")
 async def restore(filename: str, request: Request):
-    user = _get_user(request)
+    user = require_user(request)
     if not check_role(user, "owner"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -156,7 +150,7 @@ async def restore(filename: str, request: Request):
 
 @router.delete("/{filename}")
 def delete(filename: str, request: Request):
-    user = _get_user(request)
+    user = require_user(request)
     if not check_role(user, "admin"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     result = delete_backup(filename)

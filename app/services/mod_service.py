@@ -1,12 +1,16 @@
 import os
 import re
 import json
+import time
 import urllib.request
 import urllib.parse
 import urllib.error
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from app.services.dst_service import DST_DIR, CLUSTER_DIR
+
+_workshop_title_cache: Dict[str, tuple] = {}
+_WORKSHOP_CACHE_TTL = 300
 
 DST_WORKSHOP_APPID = "322330"
 MODS_SETUP_PATH = f"{DST_DIR}/mods/dedicated_server_mods_setup.lua"
@@ -136,25 +140,42 @@ def _steam_api_post(endpoint: str, fields: dict) -> Optional[dict]:
         fields = {**fields, "key": key}
     data = urllib.parse.urlencode(fields).encode("utf-8")
     url = f"https://api.steampowered.com/{endpoint}"
-    try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError):
-        return None
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(url, data=data, method="POST")
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+            if attempt == 0:
+                time.sleep(1)
+            continue
+    return None
 
 
 def fetch_workshop_titles(mod_ids: List[str]) -> dict:
     if not mod_ids:
         return {}
-    fields = {"itemcount": len(mod_ids), "appid": DST_WORKSHOP_APPID}
-    for i, mid in enumerate(mod_ids):
-        fields[f"publishedfileids[{i}]"] = mid
-    result = _steam_api_post("ISteamRemoteStorage/GetPublishedFileDetails/v1/", fields)
+    now = time.time()
+    uncached = []
     titles = {}
-    if result and result.get("response", {}).get("result") == 1:
-        for item in result["response"].get("publishedfiledetails", []):
-            titles[str(item.get("publishedfileid", ""))] = item.get("title", "")
+    for mid in mod_ids:
+        if mid in _workshop_title_cache:
+            cached_at, cached_title = _workshop_title_cache[mid]
+            if now - cached_at < _WORKSHOP_CACHE_TTL:
+                titles[mid] = cached_title
+                continue
+        uncached.append(mid)
+    if uncached:
+        fields = {"itemcount": len(uncached), "appid": DST_WORKSHOP_APPID}
+        for i, mid in enumerate(uncached):
+            fields[f"publishedfileids[{i}]"] = mid
+        result = _steam_api_post("ISteamRemoteStorage/GetPublishedFileDetails/v1/", fields)
+        if result and result.get("response", {}).get("result") == 1:
+            for item in result["response"].get("publishedfiledetails", []):
+                wid = str(item.get("publishedfileid", ""))
+                title = item.get("title", "")
+                titles[wid] = title
+                _workshop_title_cache[wid] = (now, title)
     return titles
 
 

@@ -80,7 +80,7 @@ SIZE=$(echo "${RESULT}" | "${VENV_PY}" -c "import json,sys; print(json.load(sys.
 log_info "Backup created: ${BACKUP_DIR}/${FILENAME} (${SIZE} bytes)"
 
 log_info "Rotating old backups (older than ${RETENTION_DAYS} days)..."
-find "${BACKUP_DIR}" -name "dst_*.tar.gz" -mtime +"${RETENTION_DAYS}" -delete
-find "${BACKUP_DIR}" -name "dst_*.tar.gz.sha256" -mtime +"${RETENTION_DAYS}" -delete
+find "${BACKUP_DIR}" -name "backup_*.tar.gz" -mtime +"${RETENTION_DAYS}" -delete
+find "${BACKUP_DIR}" -name "backup_*.tar.gz.sha256" -mtime +"${RETENTION_DAYS}" -delete 2>/dev/null || true
 
 log_info "Backup complete!"

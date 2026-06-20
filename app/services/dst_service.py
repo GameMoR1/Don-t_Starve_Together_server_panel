@@ -97,6 +97,7 @@ _REGEN_STATE: dict = {
 }
 _REGEN_LOCK = asyncio.Lock()
 _regen_task: Optional[asyncio.Task] = None
+_cancel_event = asyncio.Event()
 
 
 def _get_dst_env() -> dict:
@@ -569,28 +570,39 @@ async def _verify_shard_started(shard: str, expected_pid: int) -> dict:
 
 async def _verify_caves_linked_to_master(timeout_seconds: Optional[int] = None) -> dict:
     timeout = timeout_seconds if timeout_seconds is not None else CAVES_LINK_VERIFY_SECONDS
-    for _ in range(timeout):
-        await asyncio.sleep(1)
+    try:
+        async def _poll():
+            for _ in range(timeout):
+                if _cancel_event.is_set():
+                    return {"ok": False, "error": "Cancelled", "_cancelled": True}
+                await asyncio.sleep(1)
+                health = get_shard_runtime_health()
+                if health["caves_linked"]:
+                    return {"ok": True, "health": health}
+                if not health["caves_running"]:
+                    return {
+                        "ok": False,
+                        "error": "Процесс Caves завершился до подключения к Master",
+                        "health": health,
+                    }
+            health = get_shard_runtime_health()
+            err = f"Caves запущен, но не подключился к Master за {timeout} секунд."
+            if health["needs_master_restart"]:
+                err = (
+                    "Caves не может подключиться: Master работает без режима шардов. "
+                    "Остановите Master → запустите Master → затем Caves."
+                )
+            elif not health["binding_ok"]:
+                err = "Конфиг шардов не синхронизирован. Конфиг → Caves → «Привязать к Master»."
+            return {"ok": False, "error": err, "health": health}
+        return await asyncio.wait_for(_poll(), timeout=timeout + 5)
+    except asyncio.TimeoutError:
         health = get_shard_runtime_health()
-        if health["caves_linked"]:
-            return {"ok": True, "health": health}
-        if not health["caves_running"]:
-            return {
-                "ok": False,
-                "error": "Процесс Caves завершился до подключения к Master",
-                "health": health,
-            }
-
-    health = get_shard_runtime_health()
-    err = f"Caves запущен, но не подключился к Master за {timeout} секунд."
-    if health["needs_master_restart"]:
-        err = (
-            "Caves не может подключиться: Master работает без режима шардов. "
-            "Остановите Master → запустите Master → затем Caves."
-        )
-    elif not health["binding_ok"]:
-        err = "Конфиг шардов не синхронизирован. Конфиг → Caves → «Привязать к Master»."
-    return {"ok": False, "error": err, "health": health}
+        return {
+            "ok": False,
+            "error": f"Caves не подключился к Master за {timeout} секунд",
+            "health": health,
+        }
 
 
 async def start_shard(
@@ -868,11 +880,16 @@ def _find_dst_shard_pids() -> dict:
 async def _stop_all_dst_processes(*, verify: bool = False) -> dict:
     """Остановить все шарды: systemd, панель, процессы вне реестра."""
     try:
-        subprocess.run(
-            ["systemctl", "stop", "dst-master.service", "dst-caves.service"],
-            capture_output=True,
-            timeout=20,
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl", "stop", "dst-master.service", "dst-caves.service",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
         )
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=20)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
     except Exception:
         pass
 
@@ -935,12 +952,21 @@ async def stop_cluster_shards() -> dict:
 
 
 async def start_cluster_shards() -> dict:
+    bindings = apply_cluster_bindings()
+    if not bindings.get("success"):
+        return {
+            "success": False,
+            "error": bindings.get("error", "Ошибка привязки конфигов"),
+            "bindings": bindings,
+        }
+
     config_check = validate_cluster_config()
     if not config_check["ok"]:
         return {
             "success": False,
             "error": "Конфиг не готов к запуску: " + "; ".join(config_check["errors"]),
             "hints": config_check["hints"],
+            "bindings": bindings,
         }
 
     await _ensure_cluster_stopped()
@@ -953,15 +979,7 @@ async def start_cluster_shards() -> dict:
             "success": False,
             "error": world_prep.get("error", "Не удалось подготовить выбранный мир"),
             "world_prep": world_prep,
-        }
-
-    bindings = apply_cluster_bindings()
-    if not bindings.get("success"):
-        return {
-            "success": False,
-            "error": bindings.get("error", "Ошибка привязки конфигов"),
             "bindings": bindings,
-            "world_prep": world_prep,
         }
 
     master = await start_shard("Master", _auto_caves=False, _apply_world=False)
@@ -1259,15 +1277,7 @@ async def _regenerate_world_worker() -> None:
     global _regen_task
     cleared: dict = {}
     try:
-        from app.services.world_library import get_active_world_info, apply_world_to_cluster
-
         refresh_dst_paths()
-        active = get_active_world_info()
-        if active["mode"] == "library" and active.get("world_id"):
-            world_apply = apply_world_to_cluster(active["world_id"])
-            if not world_apply.get("success"):
-                raise RuntimeError(world_apply.get("error", "Не удалось подготовить мир из библиотеки"))
-
         config_check = validate_cluster_config()
         if not config_check["ok"]:
             raise RuntimeError(

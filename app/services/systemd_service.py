@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 SYSTEMD_DIR = "/etc/systemd/system"
 
@@ -8,7 +9,7 @@ def ensure_service_file(name: str, content: str) -> dict:
         path = f"{SYSTEMD_DIR}/{name}"
         with open(path, "w") as f:
             f.write(content)
-        os.system(f"systemctl daemon-reload")
+        subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=30)
         return {"success": True}
     except Exception as e:
         return {"success": False, "error": str(e)}

@@ -19,4 +19,4 @@ exec "$VENV_PYTHON" -m uvicorn app.main:app \
     --host "$HOST" \
     --port "$PORT" \
     --proxy-headers \
-    --forwarded-allow-ips='*'
+    --forwarded-allow-ips='127.0.0.1'

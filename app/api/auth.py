@@ -1,9 +1,12 @@
 from fastapi import APIRouter, Request, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 from sqlmodel import select
+from collections import defaultdict
+import time
 
-from app.models.models import User, UserSession, get_engine
+from app.models.models import User, UserSession, get_engine, encrypt_totp_secret, decrypt_totp_secret
 from sqlmodel import Session as DBSession
 from app.security.auth import (
     hash_password, verify_password, create_session, get_user_by_session,
@@ -13,6 +16,23 @@ from app.security.auth import (
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+_ip_attempts: dict = defaultdict(list)
+IP_RATE_WINDOW = 300
+IP_MAX_ATTEMPTS = 20
+
+
+def _check_ip_rate(ip: str) -> Optional[str]:
+    now = time.time()
+    _ip_attempts[ip] = [t for t in _ip_attempts[ip] if now - t < IP_RATE_WINDOW]
+    if len(_ip_attempts[ip]) >= IP_MAX_ATTEMPTS:
+        retry_after = int(IP_RATE_WINDOW - (now - _ip_attempts[ip][0]))
+        return f"Too many requests. Try again in {max(1, retry_after)} seconds"
+    return None
+
+
+def _record_ip_attempt(ip: str):
+    _ip_attempts[ip].append(time.time())
 
 
 class LoginRequest(BaseModel):
@@ -53,12 +73,17 @@ class UserUpdateRequest(BaseModel):
 
 @router.post("/login", response_model=LoginResponse)
 def login(req: LoginRequest, request: Request):
+    ip = request.client.host if request.client else "unknown"
+    rate_msg = _check_ip_rate(ip)
+    if rate_msg:
+        raise HTTPException(status_code=429, detail=rate_msg)
     engine = get_engine()
     with DBSession(engine) as db:
         stmt = select(User).where(User.username == req.username)
         user = db.exec(stmt).first()
 
         if not user:
+            _record_ip_attempt(ip)
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
         lock_msg = check_login_lockout(db, user)
@@ -67,18 +92,32 @@ def login(req: LoginRequest, request: Request):
 
         if not verify_password(req.password, user.password_hash):
             handle_failed_login(db, user)
+            _record_ip_attempt(ip)
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
         if user.totp_enabled:
-            if not req.totp_code or not verify_totp(user.totp_secret, req.totp_code):
+            totp_plain = decrypt_totp_secret(user.totp_secret) if user.totp_secret else None
+            if not req.totp_code or not totp_plain or not verify_totp(totp_plain, req.totp_code):
+                _record_ip_attempt(ip)
                 raise HTTPException(status_code=401, detail="Invalid 2FA code")
 
         reset_login_attempts(db, user)
-        session = create_session(db, user.id)
-        ip = request.client.host if request.client else None
+        _ip_attempts.pop(ip, None)
+        session = create_session(db, user.id, ip)
         log_audit(db, user.id, "login", f"Login from {ip or 'unknown'}", ip)
 
-        return LoginResponse(success=True, session_id=session.id)
+        response = JSONResponse(content={"success": True, "session_id": session.id})
+        secure = request.headers.get("X-Forwarded-Proto", request.url.scheme) == "https"
+        response.set_cookie(
+            key="session_id",
+            value=session.id,
+            httponly=True,
+            secure=secure,
+            samesite="strict",
+            max_age=86400,
+            path="/",
+        )
+        return response
 
 
 @router.post("/logout")
@@ -102,7 +141,7 @@ def get_me(request: Request):
         raise HTTPException(status_code=401, detail="Not authenticated")
     engine = get_engine()
     with DBSession(engine) as db:
-        user = get_user_by_session(db, session_id)
+        user = get_user_by_session(db, session_id, request.client.host if request.client else None)
         if not user:
             raise HTTPException(status_code=401, detail="Invalid session")
         return {
@@ -117,7 +156,7 @@ def enable_2fa(req: TOTPEnableRequest, request: Request):
     session_id = request.cookies.get("session_id")
     engine = get_engine()
     with DBSession(engine) as db:
-        user = get_user_by_session(db, session_id)
+        user = get_user_by_session(db, session_id, request.client.host if request.client else None)
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if not check_role(user, "admin"):
@@ -126,7 +165,7 @@ def enable_2fa(req: TOTPEnableRequest, request: Request):
             raise HTTPException(status_code=401, detail="Invalid password")
 
         secret = generate_totp_secret()
-        user.totp_secret = secret
+        user.totp_secret = encrypt_totp_secret(secret)
         user.totp_enabled = False
         db.add(user)
         db.commit()
@@ -140,12 +179,13 @@ def verify_2fa(req: TOTPVerifyRequest, request: Request):
     session_id = request.cookies.get("session_id")
     engine = get_engine()
     with DBSession(engine) as db:
-        user = get_user_by_session(db, session_id)
+        user = get_user_by_session(db, session_id, request.client.host if request.client else None)
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if not user.totp_secret:
             raise HTTPException(status_code=400, detail="2FA not initialized")
-        if not verify_totp(user.totp_secret, req.code):
+        totp_plain = decrypt_totp_secret(user.totp_secret)
+        if not totp_plain or not verify_totp(totp_plain, req.code):
             raise HTTPException(status_code=401, detail="Invalid code")
 
         user.totp_enabled = True
@@ -159,11 +199,13 @@ def change_password(req: ChangePasswordRequest, request: Request):
     session_id = request.cookies.get("session_id")
     engine = get_engine()
     with DBSession(engine) as db:
-        user = get_user_by_session(db, session_id)
+        user = get_user_by_session(db, session_id, request.client.host if request.client else None)
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if not verify_password(req.current_password, user.password_hash):
             raise HTTPException(status_code=401, detail="Invalid current password")
+        if req.current_password == req.new_password:
+            raise HTTPException(status_code=400, detail="New password must differ from current password")
         err = validate_password_strength(req.new_password)
         if err:
             raise HTTPException(status_code=400, detail=err)
@@ -180,7 +222,7 @@ def list_users(request: Request):
     session_id = request.cookies.get("session_id")
     engine = get_engine()
     with DBSession(engine) as db:
-        user = get_user_by_session(db, session_id)
+        user = get_user_by_session(db, session_id, request.client.host if request.client else None)
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if not check_role(user, "admin"):
@@ -198,7 +240,7 @@ def create_user(req: UserCreateRequest, request: Request):
     session_id = request.cookies.get("session_id")
     engine = get_engine()
     with DBSession(engine) as db:
-        user = get_user_by_session(db, session_id)
+        user = get_user_by_session(db, session_id, request.client.host if request.client else None)
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if not check_role(user, "owner"):
@@ -226,7 +268,7 @@ def update_user(user_id: int, req: UserUpdateRequest, request: Request):
     session_id = request.cookies.get("session_id")
     engine = get_engine()
     with DBSession(engine) as db:
-        user = get_user_by_session(db, session_id)
+        user = get_user_by_session(db, session_id, request.client.host if request.client else None)
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if not check_role(user, "owner"):
@@ -253,7 +295,7 @@ def delete_user(user_id: int, request: Request):
     session_id = request.cookies.get("session_id")
     engine = get_engine()
     with DBSession(engine) as db:
-        user = get_user_by_session(db, session_id)
+        user = get_user_by_session(db, session_id, request.client.host if request.client else None)
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if not check_role(user, "owner"):

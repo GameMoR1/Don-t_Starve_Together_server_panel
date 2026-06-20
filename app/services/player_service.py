@@ -106,9 +106,34 @@ def _read_log_lines(path: str, max_lines: int = 100000) -> List[str]:
     if not os.path.exists(path):
         return []
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-        return [ln.rstrip("\n") for ln in lines[-max_lines:]]
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            file_size = f.tell()
+            if file_size == 0:
+                return []
+
+            buf_size = 8192
+            pos = file_size
+            lines = []
+            remainder = b""
+
+            while len(lines) < max_lines and pos > 0:
+                read_size = min(buf_size, pos)
+                pos -= read_size
+                f.seek(pos)
+                chunk = f.read(read_size)
+
+                blocks = chunk.split(b"\n")
+                blocks[-1] = blocks[-1] + remainder
+                remainder = blocks[0]
+                lines = [b.decode("utf-8", errors="replace") for b in blocks[1:][::-1]] + lines
+
+            if remainder:
+                line = remainder.decode("utf-8", errors="replace")
+                if line.strip():
+                    lines.insert(0, line)
+
+        return lines[-max_lines:]
     except Exception:
         return []
 
@@ -163,10 +188,9 @@ def _save_steam_map(db: DBSession, mapping: Dict[str, str]) -> None:
     _set_state(db, _STEAM_MAP_KEY, json.dumps(mapping))
 
 
-def _ensure_sync_v2(db: DBSession) -> None:
-    if _get_state(db, _SYNC_V3_KEY) == "1":
+def _ensure_sync_version(db: DBSession, key_flag: str, next_keys: Optional[list] = None, reconcile: bool = False) -> None:
+    if _get_state(db, key_flag) == "1":
         return
-
     db.exec(delete(PlayerSession))
     for record in db.exec(select(PlayerRecord)).all():
         record.is_online = False
@@ -175,54 +199,32 @@ def _ensure_sync_v2(db: DBSession) -> None:
         record.total_playtime_seconds = 0
         db.add(record)
     _reset_log_offsets(db)
-    _set_state(db, _STEAM_MAP_KEY, "{}")
-    _set_state(db, _SYNC_V3_KEY, "1")
-    _set_state(db, _SYNC_V4_KEY, "")
+    _set_state(db, key_flag, "1")
+    if next_keys:
+        for nk in next_keys:
+            _set_state(db, nk, "")
+    if reconcile:
+        _reconcile_all_players(db)
     db.commit()
+
+
+def _ensure_sync_v2(db: DBSession) -> None:
+    _ensure_sync_version(db, _SYNC_V3_KEY, next_keys=[_SYNC_V4_KEY])
+    if _get_state(db, _STEAM_MAP_KEY) != "{}":
+        _set_state(db, _STEAM_MAP_KEY, "{}")
+        db.commit()
 
 
 def _ensure_sync_v5_reparse(db: DBSession) -> None:
-    """Один раз перечитать все логи с исправленной логикой сессий."""
-    if _get_state(db, _SYNC_V5_KEY) == "1":
-        return
-    db.exec(delete(PlayerSession))
-    for record in db.exec(select(PlayerRecord)).all():
-        record.is_online = False
-        record.join_count = 0
-        record.session_count = 0
-        record.total_playtime_seconds = 0
-        db.add(record)
-    _reset_log_offsets(db)
-    _set_state(db, _SYNC_V5_KEY, "1")
-    _set_state(db, _SYNC_V4_KEY, "")
-    _set_state(db, _SYNC_V6_KEY, "")
-    db.commit()
+    _ensure_sync_version(db, _SYNC_V5_KEY, next_keys=[_SYNC_V4_KEY, _SYNC_V6_KEY])
 
 
 def _ensure_sync_v6_log_timestamps(db: DBSession) -> None:
-    """Пересчитать сессии с метками времени из строк логов (не wall-clock)."""
-    if _get_state(db, _SYNC_V6_KEY) == "1":
-        return
-    db.exec(delete(PlayerSession))
-    for record in db.exec(select(PlayerRecord)).all():
-        record.is_online = False
-        record.join_count = 0
-        record.session_count = 0
-        record.total_playtime_seconds = 0
-        db.add(record)
-    _reset_log_offsets(db)
-    _set_state(db, _SYNC_V6_KEY, "1")
-    _set_state(db, _SYNC_V4_KEY, "")
-    db.commit()
+    _ensure_sync_version(db, _SYNC_V6_KEY, next_keys=[_SYNC_V4_KEY])
 
 
 def _ensure_sync_v4(db: DBSession) -> None:
-    """Однократная пересборка статистики из сессий (исправление накопленного времени)."""
-    if _get_state(db, _SYNC_V4_KEY) == "1":
-        return
-    _reconcile_all_players(db)
-    _set_state(db, _SYNC_V4_KEY, "1")
-    db.commit()
+    _ensure_sync_version(db, _SYNC_V4_KEY, reconcile=True)
 
 
 def _session_duration(session: PlayerSession, now: Optional[datetime] = None) -> int:

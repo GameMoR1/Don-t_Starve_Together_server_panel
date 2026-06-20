@@ -1,9 +1,33 @@
 import uuid
 import os
+import base64
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from sqlmodel import Field, SQLModel, create_engine
+
+
+def _fernet_key_from_secret() -> bytes:
+    key = os.environ.get("PANEL_SECRET_KEY", "")
+    if not key:
+        key = hashlib.sha256(b"dst-panel-fallback").hexdigest()
+    return base64.urlsafe_b64encode(hashlib.sha256(key.encode()).digest())
+
+
+def encrypt_totp_secret(secret: str) -> str:
+    from cryptography.fernet import Fernet
+    f = Fernet(_fernet_key_from_secret())
+    return f.encrypt(secret.encode()).decode()
+
+
+def decrypt_totp_secret(encrypted: str) -> Optional[str]:
+    try:
+        from cryptography.fernet import Fernet
+        f = Fernet(_fernet_key_from_secret())
+        return f.decrypt(encrypted.encode()).decode()
+    except Exception:
+        return None
 
 
 class User(SQLModel, table=True):
@@ -23,6 +47,7 @@ class UserSession(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     expires_at: datetime
+    ip_address: Optional[str] = None
 
 
 class AuditLog(SQLModel, table=True):

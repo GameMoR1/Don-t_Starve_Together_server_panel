@@ -1,25 +1,17 @@
 from fastapi import APIRouter, Request, HTTPException
 from sqlmodel import Session as DBSession
 
-from app.models.models import get_engine
-from app.security.auth import get_user_by_session
+from app.security.auth import require_user
 
 router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 
 
-def _get_user(request: Request):
-    session_id = request.cookies.get("session_id")
-    engine = get_engine()
-    with DBSession(engine) as db:
-        user = get_user_by_session(db, session_id)
-        if not user:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-        return user
+
 
 
 @router.get("/system")
 def system_metrics(request: Request):
-    _get_user(request)
+    require_user(request)
     try:
         import psutil
         cpu = psutil.cpu_percent(interval=0.5)
@@ -45,7 +37,7 @@ def system_metrics(request: Request):
 
 @router.get("/server")
 def server_metrics(request: Request):
-    _get_user(request)
+    require_user(request)
     from app.services.dst_service import get_shard_status
     return {
         "master": get_shard_status("Master"),

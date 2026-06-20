@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, HTTPException, Query
-from sqlmodel import Session as DBSession, select
+from sqlmodel import Session as DBSession, select, func
 
 from app.models.models import get_engine, AuditLog, User
 from app.security.auth import get_user_by_session, check_role
@@ -12,13 +12,14 @@ def get_audit_logs(request: Request, limit: int = Query(100, ge=1, le=1000), off
     session_id = request.cookies.get("session_id")
     engine = get_engine()
     with DBSession(engine) as db:
-        user = get_user_by_session(db, session_id)
+        user = get_user_by_session(db, session_id, request.client.host if request.client else None)
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if not check_role(user, "admin"):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         stmt = select(AuditLog).order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)
         logs = db.exec(stmt).all()
+        total = db.exec(select(func.count()).select_from(AuditLog)).scalar() or 0
         result = []
         for log in logs:
             u = db.get(User, log.user_id)
@@ -30,4 +31,4 @@ def get_audit_logs(request: Request, limit: int = Query(100, ge=1, le=1000), off
                 "ip_address": log.ip_address,
                 "created_at": log.created_at.isoformat(),
             })
-        return {"logs": result, "total": len(result)}
+        return {"logs": result, "total": total}
